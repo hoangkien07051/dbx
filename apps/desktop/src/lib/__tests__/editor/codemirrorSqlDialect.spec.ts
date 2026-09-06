@@ -68,12 +68,49 @@ describe("codemirrorSqlDialect", () => {
     expect(nodeNameAt(dialect, "SELECT GETDATE()", "GETDATE")).toBe("Builtin");
   });
 
+  it("tokenizes T-SQL temp table names instead of erroring on the hash (#8267)", () => {
+    const dialect = createDbxCodeMirrorSqlDialect(langSql, "sqlserver", "sqlserver");
+    const statement = "select * into #GH_GHMXK from ##global_temp where b.jssjh = @sjh";
+
+    // `#`/`##` prefixes used to fall through to a parser error token, leaving
+    // temp table names unhighlighted; they share the SpecialVar channel with
+    // @@variables, whose scanner handles the doubled prefix natively.
+    expect(nodeNameAt(dialect, statement, "#GH_GHMXK")).toBe("SpecialVar");
+    expect(nodeNameAt(dialect, statement, "##global_temp")).toBe("SpecialVar");
+    expect(nodeNameAt(dialect, statement, "@sjh")).toBe("SpecialVar");
+    expect(nodeNameAt(dialect, statement, "select")).toBe("Keyword");
+    expect(nodeNameAt(dialect, statement, "into")).toBe("Keyword");
+
+    // MySQL keeps interpreting `#` as a line comment — its dialect is untouched.
+    const mysql = createDbxCodeMirrorSqlDialect(langSql, "mysql", "mysql");
+    expect(nodeNameAt(mysql, "SELECT a FROM t -- x\nWHERE b = 1", "WHERE")).toBe("Keyword");
+  });
+
   it("keeps double quotes as identifier delimiters for Oracle-family dialects", () => {
     const databaseTypes: DatabaseType[] = ["oracle", "dameng", "yashandb", "oscar", "oceanbase-oracle"];
 
     for (const databaseType of databaseTypes) {
       expect(createDbxCodeMirrorSqlDialect(langSql, "mysql", databaseType).spec.doubleQuotedStrings, databaseType).toBe(false);
     }
+  });
+
+  it("highlights core keywords for StandardSQL-based dialects (#8123)", () => {
+    // IRIS/Caché (and every other StandardSQL-based type) previously resolved
+    // with an empty keyword set, so SELECT/FROM/WHERE/AND rendered as plain
+    // identifiers — exactly the highlighting the #8123 report shows.
+    const reporterStatement = "select di.MR_ADM\nfrom SQLUser.DHCMRInfo di\nwhere di.MR_BAH = 1942487\n  and di.MR_RYRQ >= '2023-01-01'";
+    for (const databaseType of ["iris", "jdbc", "h2", "db2", "hive"] as DatabaseType[]) {
+      const dialect = createDbxCodeMirrorSqlDialect(langSql, "mysql", databaseType);
+      for (const keyword of ["select", "from", "where", "and"]) {
+        expect(nodeNameAt(dialect, reporterStatement, keyword), `${databaseType}:${keyword}`).toBe("Keyword");
+      }
+    }
+
+    // Standard-SQL types gain a vocabulary too, while ClickHouse keeps its
+    // pre-existing standard-vocabulary treatment unchanged.
+    expect(createDbxCodeMirrorSqlDialect(langSql, "mysql", "iris").spec.types).toBe("array binary bit boolean char character clob date decimal double float int integer interval large national nchar nclob numeric object precision real smallint time timestamp varchar varying");
+    const clickhouseDialect = createDbxCodeMirrorSqlDialect(langSql, "mysql", "clickhouse");
+    expect(nodeNameAt(clickhouseDialect, "SELECT x FROM t WHERE y > 1", "WHERE")).toBe("Keyword");
   });
 
   it("enables backslashEscapes for MySQL-family dialects and ClickHouse while keeping it disabled for standard dialects", () => {
